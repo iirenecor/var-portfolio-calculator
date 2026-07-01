@@ -1,0 +1,221 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import networkx as nx
+
+#data names
+tickers = ['GC=F',   # gold
+           'SI=F',   # silver
+           '^GSPC',  # S&P 500
+           'BTC-USD', # Bitcoin
+           'EURUSD=X'] # EUR/USD
+
+#data download & showing
+data= yf.download (tickers, start='2015-01-01', end='2025-12-31') ['Close']
+data= data.dropna ()
+
+print(data.head())
+print(f"Filas:{data.shape[0]}, Activos: {data.shape[1]}")
+
+#returns calculation
+returns=data.pct_change().dropna()
+print(returns.head()) #just to see if it worked
+
+#building the portfolio with simple weights
+weights=np.array([0.2,0.2,0.2,0.2,0.2])
+portfolio_returns=returns.dot(weights)
+print(portfolio_returns.head())
+#VaR parameters
+total_investment= 100000 #100k USD
+confidence_level= 0.95  #95% confidence
+
+#method 1: historical VaR (does not assume any specific distribution)
+alpha = 1- confidence_level
+var_historical_percent = np.percentile(portfolio_returns,alpha*100)
+
+var_historical_monetary=total_investment*var_historical_percent
+print(f"Historical VaR (95%): {var_historical_monetary:.2f}USD")
+
+#graph for historical VaR
+plt.figure(figsize=(10,6))
+
+plt.hist(portfolio_returns, bins=60, edgecolor='black')
+
+plt.axvline(var_historical_percent, color='red', linestyle='--', linewidth=2, label=f'Historical VaR = {var_historical_percent:.2%}')
+
+plt.title("Historical Value at Risk")
+plt.xlabel("Daily Portfolio Return")
+plt.ylabel("Frequency")
+
+plt.legend()
+plt.savefig('var_historical.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+#method 2: parametric VaR (assumes normal dist.)
+import statistics
+mean= portfolio_returns.mean()
+std= portfolio_returns.std()
+
+z = statistics.NormalDist().inv_cdf(1 - confidence_level)
+
+var_parametric_percent= mean + z*std
+var_parametric_monetary= total_investment*(var_parametric_percent)
+print(f"Parametric VaR (95%):{var_parametric_monetary:.2f}USD")
+
+#graph for parametric VaR
+from scipy.stats import norm
+x = np.linspace(mean-4*std, mean+4*std, 500)
+
+y = norm.pdf(x,mean,std)
+
+plt.figure(figsize=(10,6))
+
+plt.plot(x,y)
+
+plt.fill_between(x, y, where=x<=var_parametric_percent, alpha=0.4)
+
+plt.axvline(var_parametric_percent, color='red', linestyle='--', linewidth=2, label=f'Parametric VaR = {var_parametric_percent:.2%}')
+
+plt.title("Parametric VaR")
+
+plt.xlabel("Daily Return")
+
+plt.ylabel("Density")
+
+plt.legend()
+plt.savefig('var_parametric.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+# method 3: Monte Carlo, portfolio trajectory simulation
+num_simulations = 1000
+time_horizon = 252  # 1 trading year
+
+from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.cm as cm
+
+cmap = cm.coolwarm
+
+# Simulate all paths
+all_paths = []
+ending_values = []
+
+for i in range(num_simulations):
+    simulated_daily = np.random.normal(mean, std, time_horizon)
+    portfolio_value = total_investment * np.cumprod(1 + simulated_daily)
+    all_paths.append(portfolio_value)
+    ending_values.append(portfolio_value[-1])
+
+# Normalize ending values for gradient coloring
+min_val = min(ending_values)
+max_val = max(ending_values)
+normalized = [(v - min_val) / (max_val - min_val) for v in ending_values]
+
+# Plot trajectories
+plt.figure(figsize=(12, 6))
+
+for i, path in enumerate(all_paths):
+    plt.plot(path, alpha=0.15, color=cmap(normalized[i]), linewidth=1.75)
+
+# Calculate VaR from ending values
+var_value = np.percentile(ending_values, (1 - confidence_level) * 100)
+var_montecarlo_monetary = var_value - total_investment  # loss in dollars
+var_montecarlo_percent = var_montecarlo_monetary / total_investment  # loss as %
+
+plt.axhline(y=var_value, color='red', linestyle='--', linewidth=2,
+            label=f'5th Percentile = ${var_value:,.0f}')
+plt.axhline(y=total_investment, color='white', linestyle=':', linewidth=1,
+            alpha=0.5, label='Initial Investment = $100,000')
+
+plt.title('Monte Carlo Simulation — Portfolio Value Over 1 Year (1,000 paths)', fontweight='bold')
+plt.xlabel('Trading Days')
+plt.ylabel('Portfolio Value (USD)')
+plt.legend()
+plt.tight_layout()
+plt.savefig('var_montecarlo.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+print(f"Monte Carlo VaR (95%): {var_montecarlo_percent:.2%} | {var_montecarlo_monetary:.2f} USD")
+
+
+
+
+# boxplot, returns by asset
+plt.figure(figsize=(12, 6))
+
+returns_named = returns.rename(columns={
+    'BTC-USD': 'Bitcoin',
+    'EURUSD=X': 'EUR/USD',
+    'GC=F': 'Gold',
+    'SI=F': 'Silver',
+    '^GSPC': 'S&P 500'
+})
+
+plt.boxplot([returns_named[col] for col in returns_named.columns],
+            tick_labels=returns_named.columns,
+            showfliers=True,
+            flierprops=dict(marker='o', markersize=2, alpha=0.3))
+
+plt.axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.5)
+plt.title('Daily Returns Distribution by Asset (2015–2025)', fontsize=14, fontweight='bold')
+plt.ylabel('Daily Return')
+plt.tight_layout()
+plt.savefig('returns_boxplot.png', dpi=150, bbox_inches='tight')
+
+plt.show()
+print(returns.columns.tolist())
+
+
+
+# Correlation heatmap
+plt.figure(figsize=(8, 6))
+plt.imshow(returns_named.corr(), cmap='coolwarm', aspect='auto', vmin=-0.5, vmax=1)
+plt.colorbar(label='Correlation')
+
+asset_names = ['Bitcoin', 'EUR/USD', 'Gold', 'Silver', 'S&P 500']
+plt.xticks(range(5), asset_names, rotation=45)
+plt.yticks(range(5), asset_names)
+
+corr_matrix = returns_named.corr()
+for i in range(5):
+    for j in range(5):
+        plt.text(j, i, f'{corr_matrix.iloc[i,j]:.2f}', 
+                 ha='center', va='center', fontsize=10, fontweight='bold')
+
+plt.title('Asset Correlation Matrix', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig('correlation_heatmap.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+
+
+# VaR Comparison graph
+# Monte Carlo 1 day
+num_simulations_1day = 10000
+simulated_1day = np.random.normal(mean, std, num_simulations_1day)
+var_montecarlo_1day_percent = np.percentile(simulated_1day, (1 - confidence_level) * 100)
+var_montecarlo_1day_monetary = total_investment * var_montecarlo_1day_percent
+
+
+print(f"Monte Carlo VaR 1-day (95%): {var_montecarlo_1day_percent:.2%} | {var_montecarlo_1day_monetary:.2f} USD")
+methods = ['Historical\n(1-day)', 'Parametric\n(1-day)', 'Monte Carlo\n(1-day)']
+var_values = [abs(var_historical_monetary), abs(var_parametric_monetary), abs(var_montecarlo_1day_monetary)]
+colors = ["#B2CADF", "#8AAFE0", "#7296DA"]
+
+plt.figure(figsize=(8, 5))
+bars = plt.bar(methods, var_values, color=colors, width=0.5)
+
+for bar, val in zip(bars, var_values):
+    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 30,
+             f'${val:,.0f}', ha='center', fontweight='bold', fontsize=11)
+
+plt.title('VaR Comparison — Three Methods (95% Confidence, $100k Portfolio)', 
+          fontweight='bold', fontsize=12)
+plt.ylabel('Value at Risk (USD)')
+plt.ylim(0, max(var_values) * 1.2)
+plt.tight_layout()
+plt.savefig('var_comparison.png', dpi=150, bbox_inches='tight')
+plt.show()
